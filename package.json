@@ -27,7 +27,8 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/Echokovo/pi-update-changelog/main/demo1.png"
   },
   "scripts": {
     "test": "node --test *.test.ts",
