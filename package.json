@@ -1,33 +1,51 @@
 {
-  "name": "@mblarsen/pi-extensions",
-  "version": "0.2.0",
-  "description": "Workspace for Michael Bøcker-Larsen's Pi coding agent extensions.",
-  "author": "Michael Bøcker-Larsen",
+  "name": "@echokovo/pi-update-changelog",
+  "version": "0.1.0",
+  "description": "View changelogs and update installed Pi packages interactively.",
   "license": "MIT",
-  "private": true,
   "type": "module",
-  "packageManager": "npm@11.17.0",
-  "engines": {
-    "node": ">=22.14.0"
-  },
-  "workspaces": [
-    "packages/*"
+  "keywords": [
+    "pi-package",
+    "pi-extension"
   ],
+  "files": [
+    "index.ts",
+    "settings.ts",
+    "summary.ts",
+    "README.md",
+    "demo.gif",
+    "demo1.png",
+    "demo2.png"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Echokovo/pi-update-changelog.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "scripts": {
-    "test": "node --test packages/*/*.test.ts",
+    "test": "node --test *.test.ts",
     "typecheck": "tsc --noEmit",
-    "pack:check": "npm pack --workspaces --dry-run",
-    "check": "npm run typecheck && npm test && npm run pack:check",
-    "changeset": "changeset",
-    "changeset:version": "changeset version",
-    "release": "changeset publish"
+    "pack:check": "npm pack --dry-run",
+    "check": "npm run typecheck && npm test && npm run pack:check"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.1",
-    "@earendil-works/pi-ai": "^0.84.3",
     "@earendil-works/pi-coding-agent": "^0.84.3",
     "@earendil-works/pi-tui": "^0.84.3",
     "@types/node": "^24.0.0",
+    "typebox": "^1.3.7",
     "typescript": "^6.0.3"
-  }
+  },
+  "author": "Michael Bøcker-Larsen"
 }

@@ -1,50 +1,83 @@
-# pi-extensions
+# pi-update-changelog
 
-Independent npm packages for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent).
+Interactive changelog viewer and updater for installed Pi packages.
 
-## Packages
+Detects available package updates asynchronously on startup, shows commit history, GitHub releases, and raw CHANGELOGs in a TUI overlay, and installs updates directly from the list.
 
-| Package | Description |
-|---|---|
-| [`@mblarsen/pi-burn-more-tokens`](packages/burn-more-tokens/) | Send successful-run messages to AWTRIX and macOS speech. |
-| [`@mblarsen/pi-continue-from`](packages/continue-from/) | Resume or nudge a stalled conversation. |
-| [`@mblarsen/pi-ferd`](packages/ferd/) | Fork Pi into a Herdr pane and merge the session later. |
-| [`@mblarsen/pi-follow-ups`](packages/follow-ups/) | Save follow-up notes for assistant messages. |
-| [`@mblarsen/pi-footer-manager`](packages/footer-manager/) | Toggle, reorder, and simplify the Pi status footer. |
-| [`@mblarsen/pi-fux`](packages/fux/) | Fork Pi into a tmux pane and merge the session later. |
-| [`@mblarsen/pi-observational-memory-leanctx-bridge`](packages/pi-observational-memory-leanctx-bridge/) | Store observational memories in Lean Context with exact evidence recall. |
-| [`@mblarsen/pi-session-handoff`](packages/session-handoff/) | Warn when a session is expensive or stale enough to hand off. |
-| [`@mblarsen/pi-slack-emojis`](packages/slack-emojis/) | Convert Slack and GitHub emoji shortcodes. |
-| [`@mblarsen/pi-task-ui`](packages/task-ui/) | Show backend-neutral task state in a Pi sidebar. |
-| [`@mblarsen/pi-update-changelog`](packages/update-changelog/) | View changelogs and update installed Pi packages. |
-| [`@mblarsen/pi-workmux-rename`](packages/workmux-rename/) | Rename a workmux worktree and move its Pi session. |
+> [!IMPORTANT]
+> This is a fork of [`mblarsen/pi-extensions`](https://github.com/mblarsen/pi-extensions), package [`@mblarsen/pi-update-changelog`](https://www.npmjs.com/package/@mblarsen/pi-update-changelog) by [Michael Bøcker-Larsen](https://github.com/mblarsen). It is extracted from that monorepo and carries one behavioural change: the `package_changelog` tool is no longer registered by default, and `/update-changelog-summary` covers the same ground on demand. See [LLM tool](#llm-tool). Everything else is upstream work under the original MIT license.
 
-The `fux`, `ferd`, and `task-ui` packages include their Agent Skills.
+## Demo
+
+![demo](demo.gif)
 
 ## Install
 
-Install only the packages that you need:
+From git:
 
 ```bash
-pi install npm:@mblarsen/pi-task-ui
-pi install npm:@mblarsen/pi-fux
+pi install git:github.com/Echokovo/pi-update-changelog
 ```
 
-Run `/reload` or restart Pi after installation.
+Or clone it and point Pi at the directory:
 
-See each package README for its requirements and commands.
+```bash
+git clone git@github.com:Echokovo/pi-update-changelog.git ~/ws/repos/pi-update-changelog
+pi install ~/ws/repos/pi-update-changelog
+```
+
+## Usage
+
+| Command | Description |
+|---|---|
+| `/update-changelog` | Open the interactive package update changelog viewer |
+| `/update-changelog-summary [package]` | Fetch changelogs for pending updates and ask the model to summarize them |
+
+## Detail views
+
+- **commits** — chronological commit history with conventional-commit coloring (breaking changes in bold red, features in green, fixes in cyan)
+- **releases** — markdown-rendered GitHub release notes with an inline `INSTALLED VERSION` marker
+- **changelog** — lazily fetched raw `CHANGELOG.md` from the remote repository
+
+## Interactive controls
+
+- **↑↓** or **j/k** select package · **Enter** view details · **u** install update · **v** toggle view · **d** toggle dates (commits view) · **Esc** close
+- In details view: **gg** top · **G** bottom · **Ctrl+U** half-page up · **Ctrl+D** half-page down
+
+## LLM tool
+
+`package_changelog` — fetch changelog and release notes for an npm package or GitHub repository. Shows version history and recent changes.
+
+**The tool is not registered by default.** A registered tool is part of every request, even when unused, so the default keeps it out and `/update-changelog-summary` does the same job on demand:
+
+```
+/update-changelog-summary            # every package with a pending update
+/update-changelog-summary pi-task-ui # one npm package
+/update-changelog-summary owner/repo # one GitHub repository
+```
+
+The command fetches the changelogs itself and injects them into the conversation, so the model summarizes them without a tool call. The raw changelog stays out of the transcript.
+
+To put the tool back in every request, opt in from `~/.pi/agent/settings.json`:
+
+```json
+{
+  "updateChangelog": {
+    "tool": true
+  }
+}
+```
+
+`true` (or `"always"`) registers the tool. `false`, `"auto"`, `"off"`, or no setting at all leaves it unregistered. An unrecognized value is reported as a warning instead of being guessed at. Restart Pi for a change to take effect.
+
+> [!TIP]
+> Set `export PI_OFFLINE=1` to disable Pi's built-in startup package update check and let `/update-changelog` handle all update needs cleanly.
 
 ## Development
-
-Install dependencies and run all checks:
 
 ```bash
 npm ci
 npm run check
 ```
 
-Add a changeset for each user-visible package change:
-
-```bash
-npm run changeset
-```
+`npm run check` runs the typecheck, the tests, and a `npm pack --dry-run` that verifies which files would be published.

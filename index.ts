@@ -4,6 +4,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 
+import { getAgentDir, readToolConfig } from "./settings.ts";
+import { buildSummaryPrompt, type UpdateSummary } from "./summary.ts";
+
 import { Container, SelectList, type SelectItem, Text, Spacer, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
@@ -26,10 +29,6 @@ interface PackageUpdate {
   latestDate?: string | null;
   updateStatus?: "queued" | "updating" | "success" | "error";
   updateError?: string;
-}
-
-function getAgentDir(): string {
-  return process.env.PI_AGENT_DIR ?? join(process.env.HOME ?? "~", ".pi", "agent");
 }
 
 function formatRelativeTime(dateStr: string | null | undefined): string {
@@ -1231,7 +1230,8 @@ class UpdateExplorer {
   }
 }
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+  const toolConfig = await readToolConfig();
   let lastCheckTime = 0;
   let cachedUpdates: PackageUpdate[] = [];
 
@@ -1302,6 +1302,56 @@ export default function (pi: ExtensionAPI) {
     return results.filter(r => r !== null) as PackageUpdate[];
   }
 
+  /** Collects changelog bodies for every package that has an update waiting. */
+  async function collectUpdateSummaries(): Promise<UpdateSummary[]> {
+    const updates = await checkUpdates(pi);
+    return Promise.all(
+      updates.map(async (update): Promise<UpdateSummary> => {
+        let body: string | null = null;
+        let repoUrl: string | null = null;
+        if (update.type === "npm") {
+          const npm = await fetchNpmChangelog(update.displayName, update.latestVersion, update.currentVersion);
+          body = npm.changelog;
+          repoUrl = npm.repoUrl;
+        } else if (update.installPath) {
+          body = await fetchGitChangelog(update.installPath, pi);
+        }
+        return {
+          displayName: update.displayName,
+          currentVersion: update.currentVersion,
+          latestVersion: update.latestVersion,
+          repoUrl,
+          body,
+        };
+      }),
+    );
+  }
+
+  /** Collects a changelog for one npm package name or one owner/repo path. */
+  async function collectTargetSummary(target: string): Promise<UpdateSummary[]> {
+    if (target.includes("/")) {
+      const body = await fetchGitHubReleases(target);
+      return [{ displayName: target, currentVersion: "unknown", latestVersion: "latest", body }];
+    }
+
+    const installedVersion = await getInstalledVersion(target, getAgentDir());
+    const latestInfo = await getLatestNpmInfo(target);
+    const latestVersion = latestInfo?.version ?? "unknown";
+    const { changelog, repoUrl } = await fetchNpmChangelog(
+      target,
+      latestVersion === "unknown" ? "latest" : latestVersion,
+      installedVersion ?? undefined,
+    );
+
+    return [{
+      displayName: target,
+      currentVersion: installedVersion ?? "not installed",
+      latestVersion,
+      repoUrl,
+      body: changelog,
+    }];
+  }
+
   pi.on("session_start", async (event, ctx) => {
     if (event.reason !== "startup") return;
     if (process.env.PI_OFFLINE) return;
@@ -1357,6 +1407,40 @@ export default function (pi: ExtensionAPI) {
       // No need to clear widget on exit since we no longer use one for the notification
     },
   });
+
+  pi.registerCommand("update-changelog-summary", {
+    description: "Fetch changelogs for pending package updates and ask the model to summarize them",
+    handler: async (args, ctx) => {
+      const target = args.trim();
+      ctx.ui.notify(target ? `Fetching changelog for ${target}…` : "Checking installed packages for updates…", "info");
+
+      const summaries = target ? await collectTargetSummary(target) : await collectUpdateSummaries();
+
+      if (summaries.length === 0) {
+        ctx.ui.notify(target ? `No changelog found for ${target}` : "No package updates available", "warning");
+        return;
+      }
+
+      // display: false keeps the raw changelog out of the transcript; the model still receives it.
+      pi.sendMessage(
+        {
+          customType: "update-changelog-summary",
+          content: buildSummaryPrompt(summaries),
+          display: false,
+        },
+        { triggerTurn: true },
+      );
+    },
+  });
+
+  if (toolConfig.warning) {
+    pi.on("session_start", (_event, ctx) => {
+      if (ctx.hasUI) ctx.ui.notify(toolConfig.warning!, "warning");
+    });
+  }
+
+  // Registering nothing keeps the tool out of the model's request entirely; /update-changelog-summary covers the same ground.
+  if (!toolConfig.registerTool) return;
 
   pi.registerTool({
     name: "package_changelog",
