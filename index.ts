@@ -1,10 +1,10 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 
-import { getAgentDir, readToolConfig } from "./settings.ts";
+import { readToolConfig } from "./settings.ts";
 import { buildSummaryPrompt, type UpdateSummary } from "./summary.ts";
 
 import { Container, SelectList, type SelectItem, Text, Spacer, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";

@@ -10,13 +10,13 @@ let previousAgentDir: string | undefined;
 
 beforeEach(() => {
 	agentDir = mkdtempSync(join(tmpdir(), "update-changelog-"));
-	previousAgentDir = process.env.PI_AGENT_DIR;
-	process.env.PI_AGENT_DIR = agentDir;
+	previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 });
 
 afterEach(() => {
-	if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-	else process.env.PI_AGENT_DIR = previousAgentDir;
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	rmSync(agentDir, { recursive: true, force: true });
 });
 

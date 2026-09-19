@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+// Pi resolves its config directory from PI_CODING_AGENT_DIR. Using Pi's own helper keeps this
+// extension pointed at the same settings.json Pi reads, including custom configDir and ~ paths.
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+
 export const TOOL_NAME = "package_changelog";
 
 const SETTINGS_KEY = "updateChangelog";
-
-export function getAgentDir(): string {
-  return process.env.PI_AGENT_DIR ?? join(process.env.HOME ?? "~", ".pi", "agent");
-}
 
 export function getSettingsPath(): string {
   return join(getAgentDir(), "settings.json");
