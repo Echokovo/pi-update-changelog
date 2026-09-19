@@ -17,6 +17,7 @@ From git:
 
 ```bash
 pi install git:github.com/Echokovo/pi-update-changelog
+pi install git:github.com/Echokovo/pi-update-changelog@v0.1.0  # pin a release
 ```
 
 Or clone it and point Pi at the directory:
