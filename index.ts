@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 import { readToolConfig } from "./settings.ts";
-import { buildSummaryPrompt, type UpdateSummary } from "./summary.ts";
+import { buildSummaryPrompt, isGithubRepoPath } from "./summary.ts";
+import { writeChangelogFiles, type ChangelogSource, type ChangelogStore, type UpdateSummary } from "./changelog-store.ts";
 
-import { Container, SelectList, type SelectItem, Text, Spacer, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Box, Container, SelectList, type SelectItem, Text, Spacer, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours cooldown
@@ -82,6 +83,13 @@ function parseGitSource(source: string): { host: string; path: string; ref?: str
   return { host: match[1], path: match[2], ref: match[3] };
 }
 
+/** `git:github.com/owner/repo@ref` -> `https://github.com/owner/repo`; null for other hosts. */
+function gitSourceRepoUrl(source: string): string | null {
+  const parsed = parseGitSource(source);
+  if (!parsed || parsed.host !== "github.com") return null;
+  return `https://github.com/${parsed.path}`;
+}
+
 async function getInstalledVersion(packageName: string, agentDir: string): Promise<string | null> {
   try {
     const pkgJsonPath = join(agentDir, "npm", "node_modules", packageName, "package.json");
@@ -140,6 +148,13 @@ function getGitHubHeaders(): Record<string, string> {
   return headers;
 }
 
+/** `https://github.com/owner/repo.git` -> `owner/repo`; null for anything not on GitHub. */
+function githubRepoFromUrl(repoUrl: string | null | undefined): string | null {
+  if (!repoUrl) return null;
+  const match = repoUrl.match(/github\.com\/([^/]+\/[^/]+)/);
+  return match ? match[1].replace(/\.git$/, "") : null;
+}
+
 async function fetchGithubChangelogFile(ownerSlashRepo: string): Promise<string | null> {
   const branches = ["main", "master"];
   const files = ["CHANGELOG.md", "changelog.md", "CHANGELOG", "HISTORY.md", "history.md"];
@@ -181,6 +196,33 @@ async function fetchLocalChangelogFile(installPath: string): Promise<string | nu
   return null;
 }
 
+/** `sha date subject` per commit, the shape both compare and recent-commit fetches report. */
+function formatGitHubCommits(commits: any[]): string {
+  return commits.map((c: any) => {
+    const hash = c.sha.slice(0, 7);
+    const date = c.commit.author?.date ? c.commit.author.date.slice(0, 10) : "";
+    const msg = c.commit.message.split('\n')[0];
+    return `${hash} ${date} ${msg}`;
+  }).join('\n');
+}
+
+/**
+ * Recent commits, for packages that publish neither releases, version tags, nor a changelog — the
+ * commit log is then the only record of what changed.
+ */
+async function fetchGitHubRecentCommits(ownerRepo: string, perPage = 30): Promise<string | null> {
+  try {
+    const url = `https://api.github.com/repos/${ownerRepo}/commits?per_page=${perPage}`;
+    const res = await fetch(url, { headers: getGitHubHeaders() });
+    if (!res.ok) return null;
+    const commits = (await res.json()) as any[];
+    if (!commits.length) return null;
+    return formatGitHubCommits(commits);
+  } catch {
+    return null;
+  }
+}
+
 async function fetchGitHubCommits(ownerRepo: string, base: string, head: string): Promise<string | null> {
   try {
     const headers = getGitHubHeaders();
@@ -197,12 +239,7 @@ async function fetchGitHubCommits(ownerRepo: string, base: string, head: string)
     if (compareRes.ok) {
       const data = (await compareRes.json()) as any;
       if (data.commits && data.commits.length) {
-        newCommitsStr = data.commits.reverse().map((c: any) => {
-          const hash = c.sha.slice(0, 7);
-          const date = c.commit.author?.date ? c.commit.author.date.slice(0, 10) : "";
-          const msg = c.commit.message.split('\n')[0];
-          return `${hash} ${date} ${msg}`;
-        }).join('\n');
+        newCommitsStr = formatGitHubCommits(data.commits.reverse());
       }
     }
 
@@ -219,12 +256,7 @@ async function fetchGitHubCommits(ownerRepo: string, base: string, head: string)
     if (oldRes.ok) {
       const oldData = (await oldRes.json()) as any[];
       if (oldData && oldData.length) {
-        oldCommitsStr = oldData.map((c: any) => {
-          const hash = c.sha.slice(0, 7);
-          const date = c.commit.author?.date ? c.commit.author.date.slice(0, 10) : "";
-          const msg = c.commit.message.split('\n')[0];
-          return `${hash} ${date} ${msg}`;
-        }).join('\n');
+        oldCommitsStr = formatGitHubCommits(oldData);
       }
     }
 
@@ -241,40 +273,94 @@ async function fetchGitHubCommits(ownerRepo: string, base: string, head: string)
   }
 }
 
-async function fetchNpmChangelog(packageName: string, version: string, installedVersion?: string): Promise<{ changelog: string | null; repoUrl: string | null }> {
-  let repoUrl: string | null = null;
+interface NpmPackageDoc {
+  repoUrl: string | null;
+  readme: string | null;
+}
+
+/** Registry data for one package version: where the source lives and the readme it publishes. */
+async function fetchNpmPackageDoc(packageName: string, version: string): Promise<NpmPackageDoc> {
   try {
-    const encodedName = encodeURIComponent(packageName);
-    const url = `${NPM_REGISTRY}/${encodedName}/${version}`;
+    const url = `${NPM_REGISTRY}/${encodeURIComponent(packageName)}/${version}`;
     const response = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!response.ok) return { changelog: null, repoUrl: null };
+    if (!response.ok) return { repoUrl: null, readme: null };
     const data = (await response.json()) as any;
 
     const repo = data.repository;
-    if (typeof repo === "object" && repo?.url) {
-      repoUrl = repo.url.replace(/^git\+/, "").replace(/^git:\/\//, "https://").replace(/\.git$/, "");
-    } else if (typeof repo === "string") {
-      repoUrl = repo;
+    let repoUrl: string | null = null;
+    if (typeof repo === "object" && repo?.url) repoUrl = repo.url;
+    else if (typeof repo === "string") repoUrl = repo;
+    if (repoUrl) {
+      repoUrl = repoUrl.replace(/^git\+/, "").replace(/^git:\/\//, "https://").replace(/\.git$/, "");
     }
 
-    if (repoUrl && repoUrl.includes("github.com")) {
-      const githubMatch = repoUrl.match(/github\.com\/([^/]+\/[^/]+)/);
-      if (githubMatch) {
-        const releases = await fetchGitHubReleases(githubMatch[1].replace(/\.git$/, ""), installedVersion);
-        if (releases) return { changelog: releases, repoUrl };
-      }
-    }
-
-    const readme = data.readme ?? null;
-    if (readme) {
-      const changelogSection = readme.match(/#{1,3}\s+changelog[\s\S]*?(?=#{1,2}\s+[A-Z]|$)/i);
-      if (changelogSection) return { changelog: changelogSection[0].slice(0, 3000), repoUrl };
-    }
-
-    return { changelog: readme ? readme.slice(0, 2000) : null, repoUrl };
+    return { repoUrl, readme: data.readme ?? null };
   } catch {
-    return { changelog: null, repoUrl };
+    return { repoUrl: null, readme: null };
   }
+}
+
+/** The changelog section of an npm readme, or null when the readme has none. */
+function readmeChangelogSection(readme: string | null): string | null {
+  if (!readme) return null;
+  const section = readme.match(/#{1,3}\s+changelog[\s\S]*?(?=#{1,2}\s+[A-Z]|$)/i);
+  return section ? section[0].trim() : null;
+}
+
+/** One changelog body for display: release notes when the repo has them, else the readme. */
+async function fetchNpmChangelog(packageName: string, version: string, installedVersion?: string): Promise<{ changelog: string | null; repoUrl: string | null }> {
+  const { repoUrl, readme } = await fetchNpmPackageDoc(packageName, version);
+
+  const githubRepo = githubRepoFromUrl(repoUrl);
+  if (githubRepo) {
+    const releases = await fetchGitHubReleases(githubRepo, installedVersion);
+    if (releases) return { changelog: releases, repoUrl };
+  }
+
+  const section = readmeChangelogSection(readme);
+  if (section) return { changelog: section.slice(0, 3000), repoUrl };
+
+  return { changelog: readme ? readme.slice(0, 2000) : null, repoUrl };
+}
+
+/**
+ * Every source available for one npm package, untruncated, for the on-disk store. The fetches run
+ * in parallel but are collected in a fixed order so files and prompt stay stable between runs.
+ */
+async function collectNpmSources(displayName: string, latestVersion: string, installedVersion: string | null): Promise<{ sources: ChangelogSource[]; repoUrl: string | null }> {
+  const { repoUrl, readme } = await fetchNpmPackageDoc(displayName, latestVersion);
+  const githubRepo = githubRepoFromUrl(repoUrl);
+
+  const [releases, changelogFile, commits] = await Promise.all([
+    githubRepo ? fetchGitHubReleases(githubRepo, installedVersion ?? undefined) : Promise.resolve(null),
+    githubRepo ? fetchGithubChangelogFile(githubRepo) : Promise.resolve(null),
+    githubRepo && installedVersion && installedVersion !== latestVersion
+      ? fetchGitHubCommits(githubRepo, installedVersion, latestVersion)
+      : Promise.resolve(null),
+  ]);
+
+  const sources: ChangelogSource[] = [];
+  if (releases) sources.push({ label: "GitHub releases", file: "releases.md", text: releases });
+  if (changelogFile) sources.push({ label: "CHANGELOG.md", file: "changelog.md", text: changelogFile });
+  if (commits) sources.push({ label: `Commits ${installedVersion}...${latestVersion}`, file: "commits.md", text: commits });
+
+  const section = readmeChangelogSection(readme);
+  if (section) sources.push({ label: "npm readme changelog", file: "readme-changelog.md", text: section });
+
+  // A package can publish nothing: no releases, no tags to compare, no changelog file, no readme
+  // section. Without a fallback such a package produces an empty summary, so try the commit log
+  // and then the readme before giving up.
+  if (sources.length === 0 && githubRepo) {
+    const recent = await fetchGitHubRecentCommits(githubRepo);
+    if (recent) {
+      sources.push({ label: "Recent commits (no version tags in the repository)", file: "recent-commits.md", text: recent });
+    }
+  }
+  if (sources.length === 0 && readme) {
+    sources.push({ label: "npm readme", file: "readme.md", text: readme });
+  }
+
+  return { sources, repoUrl };
 }
 
 async function fetchGitHubReleases(ownerSlashRepo: string, installedVersion?: string): Promise<string | null> {
@@ -290,41 +376,55 @@ async function fetchGitHubReleases(ownerSlashRepo: string, installedVersion?: st
       if (installedVersion && (r.tag_name === installedVersion || r.tag_name === `v${installedVersion}`)) {
         title += `  <-- INSTALLED VERSION`;
       }
-      return `${title}\n${(r.body ?? "No release notes.").slice(0, 1000)}`;
+      return `${title}\n${r.body ?? "No release notes."}`;
     }).join("\n\n");
   } catch {
     return null;
   }
 }
 
-async function fetchGitChangelog(installPath: string, pi: ExtensionAPI): Promise<string | null> {
+async function readGitLog(installPath: string, args: string[], pi: ExtensionAPI): Promise<string> {
   try {
-    // 1. Fetch new commits (HEAD..FETCH_HEAD)
-    const newRes = await pi.exec("git", ["log", "HEAD..FETCH_HEAD", "--format=%h %cd %s", "--date=short", "--no-color"], {
+    const res = await pi.exec("git", [...args, "--format=%h %cd %s", "--date=short", "--no-color"], {
       cwd: installPath,
       timeout: 10000,
     });
-    
-    // 2. Fetch old commits (HEAD and downwards)
-    const oldRes = await pi.exec("git", ["log", "-n", "15", "--format=%h %cd %s", "--date=short", "--no-color"], {
-      cwd: installPath,
-      timeout: 10000,
-    });
-
-    const newCommits = newRes.code === 0 ? newRes.stdout.trim() : "";
-    const oldCommits = oldRes.code === 0 ? oldRes.stdout.trim() : "";
-
-    if (!newCommits && !oldCommits) return null;
-
-    let combined = "";
-    if (newCommits) combined += newCommits + "\n\n";
-    combined += `## __COMMIT_HISTORY_SEPARATOR__`;
-    if (oldCommits) combined += "\n\n" + oldCommits;
-
-    return combined;
+    return res.code === 0 ? res.stdout.trim() : "";
   } catch {
-    return null;
+    return "";
   }
+}
+
+/** Commit history for the TUI detail view, with the separator the renderer splits on. */
+async function fetchGitChangelog(installPath: string, pi: ExtensionAPI): Promise<string | null> {
+  const [newCommits, oldCommits] = await Promise.all([
+    readGitLog(installPath, ["log", "HEAD..FETCH_HEAD"], pi),
+    readGitLog(installPath, ["log", "-n", "15"], pi),
+  ]);
+
+  if (!newCommits && !oldCommits) return null;
+
+  let combined = "";
+  if (newCommits) combined += newCommits + "\n\n";
+  combined += `## __COMMIT_HISTORY_SEPARATOR__`;
+  if (oldCommits) combined += "\n\n" + oldCommits;
+
+  return combined;
+}
+
+/** Every local source for a git-installed package, one file per source for the model to read. */
+async function collectGitSources(installPath: string, pi: ExtensionAPI): Promise<ChangelogSource[]> {
+  const [pending, recent, changelog] = await Promise.all([
+    readGitLog(installPath, ["log", "HEAD..FETCH_HEAD"], pi),
+    readGitLog(installPath, ["log", "-n", "15"], pi),
+    fetchLocalChangelogFile(installPath),
+  ]);
+
+  const sources: ChangelogSource[] = [];
+  if (pending) sources.push({ label: "New commits (HEAD..FETCH_HEAD)", file: "commits.md", text: pending });
+  if (recent) sources.push({ label: "Recent commits", file: "recent-commits.md", text: recent });
+  if (changelog) sources.push({ label: "CHANGELOG.md", file: "changelog.md", text: changelog });
+  return sources;
 }
 
 function formatChangelog(text: string, theme: any, showDates: boolean): string[] {
@@ -1302,45 +1402,68 @@ export default async function (pi: ExtensionAPI) {
     return results.filter(r => r !== null) as PackageUpdate[];
   }
 
-  /** Collects changelog bodies for every package that has an update waiting. */
+  /** Fetches every changelog source for each package with an update waiting. */
   async function collectUpdateSummaries(): Promise<UpdateSummary[]> {
     const updates = await checkUpdates(pi);
     return Promise.all(
       updates.map(async (update): Promise<UpdateSummary> => {
-        let body: string | null = null;
-        let repoUrl: string | null = null;
         if (update.type === "npm") {
-          const npm = await fetchNpmChangelog(update.displayName, update.latestVersion, update.currentVersion);
-          body = npm.changelog;
-          repoUrl = npm.repoUrl;
-        } else if (update.installPath) {
-          body = await fetchGitChangelog(update.installPath, pi);
+          const { sources, repoUrl } = await collectNpmSources(update.displayName, update.latestVersion, update.currentVersion);
+          return {
+            displayName: update.displayName,
+            currentVersion: update.currentVersion,
+            latestVersion: update.latestVersion,
+            repoUrl,
+            sources,
+          };
         }
+
         return {
           displayName: update.displayName,
           currentVersion: update.currentVersion,
           latestVersion: update.latestVersion,
-          repoUrl,
-          body,
+          repoUrl: update.source ? gitSourceRepoUrl(update.source) : null,
+          sources: update.installPath ? await collectGitSources(update.installPath, pi) : [],
         };
       }),
     );
   }
 
-  /** Collects a changelog for one npm package name or one owner/repo path. */
+  /** Collects every source for one npm package name or one owner/repo path. */
   async function collectTargetSummary(target: string): Promise<UpdateSummary[]> {
-    if (target.includes("/")) {
-      const body = await fetchGitHubReleases(target);
-      return [{ displayName: target, currentVersion: "unknown", latestVersion: "latest", body }];
+    if (isGithubRepoPath(target)) {
+      const [releases, changelogFile] = await Promise.all([
+        fetchGitHubReleases(target),
+        fetchGithubChangelogFile(target),
+      ]);
+
+      const sources: ChangelogSource[] = [];
+      if (releases) sources.push({ label: "GitHub releases", file: "releases.md", text: releases });
+      if (changelogFile) sources.push({ label: "CHANGELOG.md", file: "changelog.md", text: changelogFile });
+
+      if (sources.length === 0) {
+        const recent = await fetchGitHubRecentCommits(target);
+        if (recent) {
+          sources.push({ label: "Recent commits (no releases or changelog in the repository)", file: "recent-commits.md", text: recent });
+        }
+      }
+
+      return [{
+        displayName: target,
+        currentVersion: "unknown",
+        latestVersion: "latest",
+        repoUrl: `https://github.com/${target}`,
+        sources,
+      }];
     }
 
     const installedVersion = await getInstalledVersion(target, getAgentDir());
     const latestInfo = await getLatestNpmInfo(target);
     const latestVersion = latestInfo?.version ?? "unknown";
-    const { changelog, repoUrl } = await fetchNpmChangelog(
+    const { sources, repoUrl } = await collectNpmSources(
       target,
       latestVersion === "unknown" ? "latest" : latestVersion,
-      installedVersion ?? undefined,
+      installedVersion,
     );
 
     return [{
@@ -1348,7 +1471,7 @@ export default async function (pi: ExtensionAPI) {
       currentVersion: installedVersion ?? "not installed",
       latestVersion,
       repoUrl,
-      body: changelog,
+      sources,
     }];
   }
 
@@ -1408,8 +1531,26 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
+  // The injected prompt is mostly paths, so the transcript shows a compact line per package and
+  // expands to the file list.
+  pi.registerMessageRenderer<ChangelogStore>("update-changelog-summary", (message, { expanded, outputPad }, theme) => {
+    const store = message.details;
+    const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
+    const lines = [theme.fg("accent", `📦 Changelogs written to ${store?.dir ?? "disk"}`)];
+
+    for (const pkg of store?.packages ?? []) {
+      lines.push(`${pkg.displayName} ${pkg.currentVersion} → ${pkg.latestVersion}`);
+      if (!expanded) continue;
+      if (pkg.sources.length === 0) lines.push(theme.fg("dim", "  no changelog source fetched"));
+      for (const source of pkg.sources) lines.push(theme.fg("dim", `  ${source.path}`));
+    }
+
+    box.addChild(new Text(lines.join("\n"), 0, 0));
+    return box;
+  });
+
   pi.registerCommand("update-changelog-summary", {
-    description: "Fetch changelogs for pending package updates and ask the model to summarize them",
+    description: "Fetch changelogs to local files and ask the model to summarize them",
     handler: async (args, ctx) => {
       const target = args.trim();
       ctx.ui.notify(target ? `Fetching changelog for ${target}…` : "Checking installed packages for updates…", "info");
@@ -1421,12 +1562,22 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
 
-      // display: false keeps the raw changelog out of the transcript; the model still receives it.
+      let store: ChangelogStore;
+      try {
+        store = await writeChangelogFiles(summaries);
+      } catch (err) {
+        ctx.ui.notify(`Could not write changelog files: ${(err as Error).message}`, "error");
+        return;
+      }
+
+      // The full text lives on disk, so only paths and metadata are injected. The message is
+      // visible: the user sees where the files went, and details drive the compact renderer.
       pi.sendMessage(
         {
           customType: "update-changelog-summary",
-          content: buildSummaryPrompt(summaries),
-          display: false,
+          content: buildSummaryPrompt(store),
+          display: true,
+          details: store,
         },
         { triggerTurn: true },
       );
@@ -1454,7 +1605,7 @@ export default async function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const { package: packageName } = params;
 
-      if (packageName.includes("/")) {
+      if (isGithubRepoPath(packageName)) {
         const releases = await fetchGitHubReleases(packageName);
         if (releases) {
           return {

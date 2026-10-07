@@ -12,6 +12,7 @@
     "index.ts",
     "settings.ts",
     "summary.ts",
+    "changelog-store.ts",
     "README.md",
     "demo.gif",
     "demo1.png",

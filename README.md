@@ -32,7 +32,7 @@ pi install ~/ws/repos/pi-update-changelog
 | Command | Description |
 |---|---|
 | `/update-changelog` | Open the interactive package update changelog viewer |
-| `/update-changelog-summary [package]` | Fetch changelogs for pending updates and ask the model to summarize them |
+| `/update-changelog-summary [package]` | Fetch changelogs to local files and ask the model to summarize them from those files |
 
 ## Detail views
 
@@ -57,7 +57,9 @@ pi install ~/ws/repos/pi-update-changelog
 /update-changelog-summary owner/repo # one GitHub repository
 ```
 
-The command fetches the changelogs itself and injects them into the conversation, so the model summarizes them without a tool call. The raw changelog stays out of the transcript.
+The command downloads every source itself, writes them to `os.tmpdir()/pi/update-changelog/<run-id>/`, and injects a message with the paths. Nothing is truncated, and the model reads the files instead of fetching the same changelogs again over the network.
+
+Each run writes one directory per package with one file per source (`releases.md`, `changelog.md`, `commits.md`, `readme-changelog.md`). A package where nothing could be fetched is listed without a file, so an empty result is distinguishable from "nothing changed". The injected message is visible in the transcript and expands to the file list. The directory lives under the OS temp directory and is left in place for the session.
 
 To put the tool back in every request, opt in from `~/.pi/agent/settings.json`:
 
