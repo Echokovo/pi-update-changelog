@@ -1,6 +1,6 @@
 {
   "name": "@echokovo/pi-update-changelog",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "View changelogs and update installed Pi packages interactively.",
   "license": "MIT",
   "type": "module",
