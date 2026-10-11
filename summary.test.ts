@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChangelogStore } from "./changelog-store.ts";
-import { buildSummaryPrompt, isGithubRepoPath } from "./summary.ts";
+import { buildSummaryPrompt, isGithubRepoPath, summarySessionName } from "./summary.ts";
 
 const DIR = "/tmp/pi/update-changelog/2026-01-01T00-00-00-000Z-ab12cd";
 
@@ -69,4 +69,9 @@ test("reads owner/repo as a GitHub path but not a scoped npm name", () => {
 	assert.equal(isGithubRepoPath("@mblarsen/pi-task-ui"), false);
 	assert.equal(isGithubRepoPath("pi-task-ui"), false);
 	assert.equal(isGithubRepoPath("owner/repo/extra"), false);
+});
+
+test("formats the summary session name as [YYMMDD] with the local date", () => {
+	assert.equal(summarySessionName(new Date(2026, 0, 5)), "[260105] Update Changelog Summary");
+	assert.equal(summarySessionName(new Date(2026, 11, 31)), "[261231] Update Changelog Summary");
 });

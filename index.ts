@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 import { readToolConfig } from "./settings.ts";
-import { buildSummaryPrompt, isGithubRepoPath } from "./summary.ts";
+import { buildSummaryPrompt, isGithubRepoPath, summarySessionName } from "./summary.ts";
 import { writeChangelogFiles, type ChangelogSource, type ChangelogStore, type UpdateSummary } from "./changelog-store.ts";
 
 import { Box, Container, SelectList, type SelectItem, Text, Spacer, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -1552,6 +1552,10 @@ export default async function (pi: ExtensionAPI) {
   pi.registerCommand("update-changelog-summary", {
     description: "Fetch changelogs to local files and ask the model to summarize them",
     handler: async (args, ctx) => {
+      // The first summary run of a fresh session names it so it is easy to find later.
+      if (pi.getSessionName() === undefined && !ctx.sessionManager.getEntries().some((e) => e.type === "message")) {
+        pi.setSessionName(summarySessionName(new Date()));
+      }
       const target = args.trim();
       ctx.ui.notify(target ? `Fetching changelog for ${target}…` : "Checking installed packages for updates…", "info");
 

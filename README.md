@@ -59,6 +59,8 @@ pi install ~/ws/repos/pi-update-changelog
 
 The command downloads every source itself, writes them to `os.tmpdir()/pi/update-changelog/<run-id>/`, and injects a message with the paths. Nothing is truncated, and the model reads the files instead of fetching the same changelogs again over the network.
 
+On the first run in a fresh session the command also names the session `[YYMMDD] Update Changelog Summary`, so it is easy to spot in the session list.
+
 Each run writes one directory per package with one file per source (`releases.md`, `changelog.md`, `commits.md`, `readme-changelog.md`). A package where nothing could be fetched is listed without a file, so an empty result is distinguishable from "nothing changed". The injected message is visible in the transcript and expands to the file list. The directory lives under the OS temp directory and is left in place for the session.
 
 To put the tool back in every request, opt in from `~/.pi/agent/settings.json`:

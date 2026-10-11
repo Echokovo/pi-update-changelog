@@ -50,3 +50,11 @@ export function buildSummaryPrompt(store: ChangelogStore): string {
     "Summarize what changed in each package, call out breaking changes, and say whether upgrading now looks safe.",
   ].join("\n");
 }
+
+/** Session name for the first `/update-changelog-summary` run of an unnamed session. */
+export function summarySessionName(date: Date): string {
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `[${yy}${mm}${dd}] Update Changelog Summary`;
+}
